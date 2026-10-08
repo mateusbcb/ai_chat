@@ -9,6 +9,5 @@ class Message extends Model
 {
     use HasFactory;
 
-    protected $table = 'messages';
-    protected $fillable = ['role', 'content', 'session_id'];
+    protected $fillable = ['role', 'content', 'session_id','chat_session_id'];
 }

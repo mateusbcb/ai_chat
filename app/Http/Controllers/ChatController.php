@@ -3,120 +3,154 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use GuzzleHttp\Client;
 use App\Models\Message;
+use App\Models\ChatSession;
 
 class ChatController extends Controller
 {
-    public function index()
+    public function index($id = null)
     {
-        // Puxa o histórico e decodifica os emojis e as quebras de linha reais
-        $messages = Message::orderBy('created_at', 'asc')->get()->map(function($msg) {
-            // 1. json_decode recupera os emojis
-            $decoded = json_decode('"' . $msg->content . '"');
-            
-            // 2. Garante que os '\n' salvos como texto voltem a ser quebras de linha de verdade para o JavaScript ler
-            $msg->content = trim(stripcslashes($decoded), '"');
-            
-            return $msg;
-        });
+        // Busca todas as abas/conversas para a barra lateral
+        $sessions = ChatSession::orderBy('updated_at', 'desc')->get();
 
-        return view('chat', compact('messages'));
+        // Se não houver nenhuma aba criada, cria a primeira automaticamente
+        if ($sessions->isEmpty()) {
+            $newSession = ChatSession::create(['title' => 'Nova conversa']);
+            return redirect()->route('chat.index', $newSession->id);
+        }
+
+        // Se não foi passado ID na URL, pega o ID da conversa mais recente
+        if (!$id) {
+            return redirect()->route('chat.index', $sessions->first()->id);
+        }
+
+        $currentSession = ChatSession::findOrFail($id);
+        
+        // Puxa e decodifica as mensagens EXCLUSIVAS desta sessão/aba
+        $messages = Message::where('chat_session_id', $id)
+            ->orderBy('created_at', 'asc')
+            ->get()
+            ->map(function($msg) {
+                $decoded = json_decode('"' . $msg->content . '"');
+                $msg->content = trim(stripcslashes($decoded), '"');
+                return $msg;
+            });
+
+        return view('chat', compact('sessions', 'currentSession', 'messages'));
     }
 
-    public function sendMessage(Request $request)
+    public function newSession()
     {
-        $request->validate([
-            'message' => 'required|string',
-        ]);
+        $session = ChatSession::create(['title' => 'Nova conversa']);
+        return response()->json(['status' => 'success', 'redirect' => route('chat.index', $session->id)]);
+    }
 
+    public function sendMessage(Request $request, $id)
+    {
+        $request->validate(['message' => 'required|string']);
         $userMessage = $request->input('message');
+        
+        $session = ChatSession::findOrFail($id);
 
-        // 1. Salva a mensagem do usuário codificada no Banco de Dados
+        // Se a conversa ainda tiver o título padrão, renomeia com o começo da primeira frase
+        if ($session->title === 'Nova conversa') {
+            $session->update(['title' => substr($userMessage, 0, 25) . '...']);
+        } else {
+            $session->touch(); // Sobe a aba atual para o topo da lista
+        }
+
+        // 1. Salva a mensagem do usuário vinculada a este ID de aba
         Message::create([
             'role' => 'user',
-            'content' => trim(json_encode($userMessage), '"')
+            'content' => trim(json_encode($userMessage), '"'),
+            'chat_session_id' => $id
         ]);
 
-        // 2. Busca o histórico formatado e decodifica para a IA receber o emoji real
-        $history = Message::orderBy('created_at', 'asc')
+        // 2. Coleta o histórico da aba e impede duplicações de papel seguidas para não quebrar o Gemma
+        $rawHistory = Message::where('chat_session_id', $id)
+            ->orderBy('created_at', 'asc')
             ->get(['role', 'content'])
             ->map(function ($message) {
-                // Decodifica o ASCII do banco de volta para emoji real antes de mandar para o LM Studio
-                $decodedContent = trim(json_decode('"' . $message->content . '"'), '"');
-                
                 return [
                     'role' => trim($message->role),
-                    'content' => $decodedContent
+                    'content' => trim(json_decode('"' . $message->content . '"'), '"')
                 ];
             })
             ->toArray();
 
-        return new StreamedResponse(function () use ($history) {
+        $history = [];
+        foreach ($rawHistory as $msg) {
+            $lastIdx = count($history) - 1;
+            // Se a última mensagem adicionada tiver o mesmo 'role', une os textos
+            if ($lastIdx >= 0 && $history[$lastIdx]['role'] === $msg['role']) {
+                $history[$lastIdx]['content'] .= "\n" . $msg['content'];
+            } else {
+                $history[] = $msg;
+            }
+        }
+
+        // 3. Retorna a transmissão de texto por stream (Server-Sent Events)
+        return new StreamedResponse(function () use ($history, $id) {
             $client = new Client();
-            
             $baseUrl = env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1');
             $model = env('LM_STUDIO_MODEL');
 
-            $response = $client->post($baseUrl . '/chat/completions', [
-                'json' => [
-                    'model' => $model,
-                    'messages' => $history,
-                    'stream' => true
-                ],
-                'stream' => true
-            ]);
-
-            $body = $response->getBody();
-            $fullResponseText = "";
-
-            // Lendo o stream de forma nativa e ultra-compatível
-            while (!$body->eof()) {
-                // Lê até encontrar uma quebra de linha nativa do stream
-                $line = '';
-                while (!$body->eof()) {
-                    $char = $body->read(1);
-                    if ($char === "\n") {
-                        break;
-                    }
-                    $line .= $char;
-                }
-                $line = trim($line);
-
-                if (strpos($line, 'data: ') === 0) {
-                    $dataText = substr($line, 6);
-                    
-                    if ($dataText === '[DONE]') {
-                        break;
-                    }
-
-                    $data = json_decode($dataText, true);
-                    if (isset($data['choices'][0]['delta']['content'])) { // <-- Ajustado o índice [0] que varia em alguns modelos
-                        $content = $data['choices'][0]['delta']['content'];
-                        $fullResponseText .= $content;
-
-                        echo $content;
-                        
-                        // Força o PHP e o Servidor Apache/Nginx/Artisan a cuspirem o caractere imediatamente
-                        if (ob_get_level() > 0) {
-                            ob_flush();
-                        }
-                        flush();
-                    }
-                }
-            }
-
-            // 3. Salva a resposta gerada pela IA convertendo emojis em sequências ASCII seguras
-            if (!empty(trim($fullResponseText))) {
-                // Transforma "😊" em "\u1f60a" (Texto puro que cabe no seu UTF8)
-                $safeText = trim(json_encode($fullResponseText), '"');
-
-                Message::create([
-                    'role' => 'assistant',
-                    'content' => $safeText
+            try {
+                $response = $client->post($baseUrl . '/chat/completions', [
+                    'json' => [
+                        'model' => $model,
+                        'messages' => $history,
+                        'stream' => true
+                    ],
+                    'stream' => true,
+                    'http_errors' => false // Impede o PHP de quebrar se o LM Studio der erro de validação 400 no final
                 ]);
+
+                $body = $response->getBody();
+                $fullResponseText = "";
+
+                while (!$body->eof()) {
+                    $line = '';
+                    while (!$body->eof()) {
+                        $char = $body->read(1);
+                        if ($char === "\n") break;
+                        $line .= $char;
+                    }
+                    $line = trim($line);
+
+                    if (strpos($line, 'data: ') === 0) {
+                        $dataText = substr($line, 6);
+                        if ($dataText === '[DONE]') break;
+
+                        $data = json_decode($dataText, true);
+                        if (isset($data['choices'][0]['delta']['content'])) { // Índice ajustado para o padrão rigoroso v1
+                            $content = $data['choices'][0]['delta']['content'];
+                            $fullResponseText .= $content;
+
+                            echo $content;
+                            if (ob_get_level() > 0) ob_flush();
+                            flush();
+                        }
+                    }
+                }
+
+                // 4. Salva a resposta da IA vinculada a esta aba se houver texto gerado
+                if (!empty(trim($fullResponseText))) {
+                    Message::create([
+                        'role' => 'assistant',
+                        'content' => trim(json_encode($fullResponseText), '"'),
+                        'chat_session_id' => $id
+                    ]);
+                } else {
+                    if ($response->getStatusCode() >= 400) {
+                        echo "Erro local com o modelo (Status HTTP: " . $response->getStatusCode() . ")";
+                    }
+                }
+
+            } catch (\Exception $e) {
+                echo "Erro de conexão física com o LM Studio: " . $e->getMessage();
             }
         }, 200, [
             'Cache-Control' => 'no-cache',
@@ -125,22 +159,14 @@ class ChatController extends Controller
         ]);
     }
 
-    public function clearChat()
+    public function clearChat($id)
     {
-        // Deleta todas as mensagens do banco de dados
-        Message::truncate();
-        return response()->json(['status' => 'success']);
-    }
+        // 1. Deleta manualmente todas as mensagens associadas a esta aba de chat
+        Message::where('chat_session_id', $id)->delete();
 
-    private function readLine($stream) {
-        $buffer = '';
-        while (!$stream->eof()) {
-            $char = $stream->read(1);
-            if ($char === "\n") {
-                break;
-            }
-            $buffer .= $char;
-        }
-        return trim($buffer);
+        // 2. Exclui a aba de chat em si
+        ChatSession::destroy($id);
+
+        return response()->json(['status' => 'success', 'redirect' => route('chat.index')]);
     }
 }

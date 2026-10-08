@@ -15,4 +15,7 @@ AI Chat basico, com histórico de conversa, capaz de interpretar código HTML e 
 <br>
 
 ## Versão 3
+AI chat agora com abas de conversa e possúe a capacidade de lembrar do histórico de conversa por aba
+
+## versão 4
 (...)

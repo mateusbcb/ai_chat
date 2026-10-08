@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreateMessagesTable extends Migration
+class AddChatSessionIdToMessagesTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,13 +13,9 @@ class CreateMessagesTable extends Migration
      */
     public function up()
     {
-        Schema::create('messages', function (Blueprint $table) {
-            $table->id();
-            $table->string('role'); // 'user' ou 'assistant'
-            $table->text('content'); // O texto da mensagem
-            $table->string('session_id')->nullable(); // Para caso você queira separar chats por abas/sessões no futuro
+        Schema::table('messages', function (Blueprint $table) {
+            // Cria a coluna vinculada e apaga em cascata se a sessão for deletada
             $table->foreignId('chat_session_id')->nullable()->constrained('chat_sessions')->onDelete('cascade');
-            $table->timestamps();
         });
     }
 
@@ -30,6 +26,9 @@ class CreateMessagesTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('messages');
+        Schema::table('messages', function (Blueprint $table) {
+            $table->dropForeign(['chat_session_id']);
+            $table->dropColumn('chat_session_id');
+        });
     }
 }
