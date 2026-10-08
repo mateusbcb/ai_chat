@@ -78,11 +78,25 @@ class ChatController extends Controller
                     'content' => trim(json_decode('"' . $message->content . '"'), '"')
                 ];
             })
-            ->toArray();
+        ->toArray();
 
-        $history = [];
+        // INJEÇÃO DO SYSTEM PROMPT: Inicializa o array com as regras fixas lidas do arquivo
+        $systemPromptPath = storage_path('app/project_context.txt');
+        $systemContent = file_exists($systemPromptPath) 
+            ? file_get_contents($systemPromptPath) 
+            : 'Você é um assistente útil focado em programação.';
+
+        $history = [
+            [
+                'role' => 'system',
+                'content' => trim($systemContent)
+            ]
+        ];
+
+        // Alimenta o array de histórico agrupando mensagens consecutivas do mesmo autor
         foreach ($rawHistory as $msg) {
             $lastIdx = count($history) - 1;
+            
             // Se a última mensagem adicionada tiver o mesmo 'role', une os textos
             if ($lastIdx >= 0 && $history[$lastIdx]['role'] === $msg['role']) {
                 $history[$lastIdx]['content'] .= "\n" . $msg['content'];
