@@ -81,7 +81,7 @@ class ChatController extends Controller
         ->toArray();
 
         // INJEÇÃO DO SYSTEM PROMPT: Inicializa o array com as regras fixas lidas do arquivo
-        $systemPromptPath = storage_path('app/project_context.txt');
+        $systemPromptPath = resource_path('markdown/project_context.md');
         $systemContent = file_exists($systemPromptPath) 
             ? file_get_contents($systemPromptPath) 
             : 'Você é um assistente útil focado em programação.';

@@ -16,6 +16,7 @@ AI Chat basico, com histórico de conversa, capaz de interpretar código HTML e 
 
 ## Versão 3
 AI chat agora com abas de conversa e possúe a capacidade de lembrar do histórico de conversa por aba
+Trocado o arquivo de Contexto da pasta Storage para a Resource, garantindo que esse arquivo seja enviado para o GIT
 
 ## versão 4
 (...)
