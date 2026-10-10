@@ -19,4 +19,11 @@ AI chat agora com abas de conversa e possúe a capacidade de lembrar do históri
 Trocado o arquivo de Contexto da pasta Storage para a Resource, garantindo que esse arquivo seja enviado para o GIT
 
 ## versão 4
+Criado os CRUD´s para o projeto fictício com dados fake para a AI conseguir tanto ler como criar novos. <br>
+Foram criados novas tabelas (Produtos, Fornecedores e Lojas), assim como tabelas pivo (produto <> fornecedor e produto <> loja). <br>
+O Projeto fictício é um CRM básico para gerenciar uma empresa que possui filiais e seus produtos podem estar em várias filiais e providos de vários fornecedores diferentes.
+
+<br>
+
+## versão 5
 (...)
