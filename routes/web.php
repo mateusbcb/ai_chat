@@ -6,10 +6,14 @@ use App\Http\Controllers\StoreController;
 use App\Http\Controllers\SupplierController;
 use Illuminate\Support\Facades\DB;
 
-// Rotas do Chat IA Local (Atualizadas para o padrão com ID de aba)
+// Rota 1: Analisa se a IA precisa de ferramentas ou se é uma conversa comum
+Route::post('/chat/send/{id}', [ChatController::class, 'sendMessage'])->name('chat.send');
+// Rota 2: Executa o streaming de texto final na tela
+Route::post('/chat/stream/{id}', [ChatController::class, 'streamResponse'])->name('chat.stream');
+
+// Demais rotas de AI
 Route::get('/chat/{id?}', [ChatController::class, 'index'])->name('chat.index');
 Route::post('/chat/new', [ChatController::class, 'newSession'])->name('chat.new');
-Route::post('/chat/send/{id}', [ChatController::class, 'sendMessage'])->name('chat.send');
 Route::post('/chat/clear/{id}', [ChatController::class, 'clearChat'])->name('chat.clear');
 
 // ----

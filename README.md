@@ -26,4 +26,11 @@ O Projeto fictício é um CRM básico para gerenciar uma empresa que possui fili
 <br>
 
 ## versão 5
+Adaptado para a LLM ter respostas diferentes casa identifique se é uma conversa comum ou se precisa executar uma TOOLS. <br>
+Atualmente em testes e o uso das TOOLS estão limitadas. <br>
+Para conversas comuns é usado uma LLM e para uso de TOOLS outra LLM.
+
+<br>
+
+## versão 6
 (...)

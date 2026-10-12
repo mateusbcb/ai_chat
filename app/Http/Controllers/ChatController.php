@@ -47,6 +47,9 @@ class ChatController extends Controller
         return response()->json(['status' => 'success', 'redirect' => route('chat.index', $session->id)]);
     }
 
+    /**
+     * Rota 1: Analisa se há necessidade de ferramentas usando o modelo de TOOLS.
+     */
     public function sendMessage(Request $request, $id)
     {
         $request->validate(['message' => 'required|string']);
@@ -54,21 +57,20 @@ class ChatController extends Controller
         
         $session = ChatSession::findOrFail($id);
 
-        // Se a conversa ainda tiver o título padrão, renomeia com o começo da primeira frase
         if ($session->title === 'Nova conversa') {
             $session->update(['title' => substr($userMessage, 0, 25) . '...']);
         } else {
-            $session->touch(); // Sobe a aba atual para o topo da lista
+            $session->touch();
         }
 
-        // 1. Salva a mensagem do usuário vinculada a este ID de aba
+        // Salva a mensagem do usuário no MySQL
         Message::create([
             'role' => 'user',
             'content' => trim(json_encode($userMessage), '"'),
             'chat_session_id' => $id
         ]);
 
-        // 2. Coleta o histórico da aba e impede duplicações de papel seguidas para não quebrar o Gemma
+        // Carrega o histórico acumulado
         $rawHistory = Message::where('chat_session_id', $id)
             ->orderBy('created_at', 'asc')
             ->get(['role', 'content'])
@@ -78,48 +80,125 @@ class ChatController extends Controller
                     'content' => trim(json_decode('"' . $message->content . '"'), '"')
                 ];
             })
-        ->toArray();
+            ->toArray();
 
-        // INJEÇÃO DO SYSTEM PROMPT: Inicializa o array com as regras fixas lidas do arquivo
         $systemPromptPath = resource_path('markdown/project_context.md');
-        $systemContent = file_exists($systemPromptPath) 
-            ? file_get_contents($systemPromptPath) 
-            : 'Você é um assistente útil focado em programação.';
+        $systemContent = file_exists($systemPromptPath) ? file_get_contents($systemPromptPath) : '';
 
-        $history = [
-            [
-                'role' => 'system',
-                'content' => trim($systemContent)
-            ]
-        ];
-
-        // Alimenta o array de histórico agrupando mensagens consecutivas do mesmo autor
+        // MONTADOR DE HISTÓRICO CORRETO: Inicia com o System e adiciona itens no fim sem quebrar o array
+        $history = [['role' => 'system', 'content' => trim($systemContent)]];
         foreach ($rawHistory as $msg) {
             $lastIdx = count($history) - 1;
-            
-            // Se a última mensagem adicionada tiver o mesmo 'role', une os textos
             if ($lastIdx >= 0 && $history[$lastIdx]['role'] === $msg['role']) {
                 $history[$lastIdx]['content'] .= "\n" . $msg['content'];
             } else {
-                $history[] = $msg;
+                $history[] = $msg; // <-- CORREÇÃO: Uso do colchete [] para empurrar no fim do array de forma nativa
             }
         }
 
-        // 3. Retorna a transmissão de texto por stream (Server-Sent Events)
-        return new StreamedResponse(function () use ($history, $id) {
+        $client = new Client();
+        $baseUrl = env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1');
+        $modelTools = env('LM_STUDIO_MODEL_TOOLS'); 
+        
+        $toolsService = new \App\Services\CrmToolsService();
+        $toolsManifest = $toolsService->getToolsManifest();
+
+        try {
+            // Requisição estática de análise de intenção de ferramentas
+            $response = $client->post($baseUrl . '/chat/completions', [
+                'json' => [
+                    'model' => $modelTools,
+                    'messages' => $history,
+                    'tools' => $toolsManifest,
+                    'tool_choice' => 'auto',
+                    'stream' => false
+                ],
+                'http_errors' => false
+            ]);
+
+            $responseData = json_decode($response->getBody(), true);
+            $choiceMessage = $responseData['choices'][0]['message'] ?? null;
+
+            if ($choiceMessage && isset($choiceMessage['tool_calls'])) {
+                $rawCalls = $choiceMessage['tool_calls'];
+                $toolCall = isset($rawCalls[0]) ? $rawCalls[0] : $rawCalls;
+                $functionName = $toolCall['function']['name'] ?? $choiceMessage['function']['name'] ?? null;
+
+                if ($functionName) {
+                    $arguments = is_string($toolCall['function']['arguments'] ?? '') 
+                        ? json_decode($toolCall['function']['arguments'], true) 
+                        : ($toolCall['function']['arguments'] ?? []);
+
+                    // Executa o serviço que consulta as tabelas do MySQL reais
+                    $toolResult = $toolsService->execute($functionName, $arguments);
+
+                    return response()->json([
+                        'status' => 'tool_call',
+                        'choice_message' => $choiceMessage,
+                        'tool_call_id' => $toolCall['id'] ?? 'call_123',
+                        'function_name' => $functionName,
+                        'tool_result' => $toolResult
+                    ]);
+                }
+            }
+
+            return response()->json(['status' => 'regular_chat']);
+
+        } catch (\Exception $e) {
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Rota 2: Executa exclusivamente o streaming de texto com o modelo focado em CHAT.
+     */
+    public function streamResponse(Request $request, $id)
+    {
+        set_time_limit(0);
+        $historyInput = $request->input('history', []);
+
+        // Se o histórico não veio processado do Front, reconstrói o padrão local de segurança
+        if (empty($historyInput)) {
+            $rawHistory = Message::where('chat_session_id', $id)
+                ->orderBy('created_at', 'asc')
+                ->get(['role', 'content'])
+                ->map(function ($message) {
+                    return [
+                        'role' => trim($message->role),
+                        'content' => trim(json_decode('"' . $message->content . '"'), '"')
+                    ];
+                })
+                ->toArray();
+
+            $systemPromptPath = resource_path('markdown/project_context.md');
+            $systemContent = file_exists($systemPromptPath) ? file_get_contents($systemPromptPath) : '';
+
+            $historyInput = [['role' => 'system', 'content' => trim($systemContent)]];
+            foreach ($rawHistory as $msg) {
+                $lastIdx = count($historyInput) - 1;
+                if ($lastIdx >= 0 && $historyInput[$lastIdx]['role'] === $msg['role']) {
+                    $historyInput[$lastIdx]['content'] .= "\n" . $msg['content'];
+                } else {
+                    $historyInput[] = $msg; // <-- CORREÇÃO: Uso de [] garantido também na reconstrução
+                }
+            }
+        }
+
+        return new StreamedResponse(function () use ($historyInput, $id) {
             $client = new Client();
             $baseUrl = env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1');
-            $model = env('LM_STUDIO_MODEL');
+            $modelChat = env('LM_STUDIO_MODEL_CHAT'); 
 
             try {
+                // CORREÇÃO: Endpoint limpo unificado sem repetições de /v1/v1
                 $response = $client->post($baseUrl . '/chat/completions', [
                     'json' => [
-                        'model' => $model,
-                        'messages' => $history,
+                        'model' => $modelChat,
+                        'messages' => $historyInput,
                         'stream' => true
                     ],
                     'stream' => true,
-                    'http_errors' => false // Impede o PHP de quebrar se o LM Studio der erro de validação 400 no final
+                    'http_errors' => false
                 ]);
 
                 $body = $response->getBody();
@@ -139,7 +218,7 @@ class ChatController extends Controller
                         if ($dataText === '[DONE]') break;
 
                         $data = json_decode($dataText, true);
-                        if (isset($data['choices'][0]['delta']['content'])) { // Índice ajustado para o padrão rigoroso v1
+                        if (isset($data['choices'][0]['delta']['content'])) {
                             $content = $data['choices'][0]['delta']['content'];
                             $fullResponseText .= $content;
 
@@ -150,21 +229,16 @@ class ChatController extends Controller
                     }
                 }
 
-                // 4. Salva a resposta da IA vinculada a esta aba se houver texto gerado
                 if (!empty(trim($fullResponseText))) {
                     Message::create([
                         'role' => 'assistant',
                         'content' => trim(json_encode($fullResponseText), '"'),
                         'chat_session_id' => $id
                     ]);
-                } else {
-                    if ($response->getStatusCode() >= 400) {
-                        echo "Erro local com o modelo (Status HTTP: " . $response->getStatusCode() . ")";
-                    }
                 }
 
             } catch (\Exception $e) {
-                echo "Erro de conexão física com o LM Studio: " . $e->getMessage();
+                echo "Erro no streaming final: " . $e->getMessage();
             }
         }, 200, [
             'Cache-Control' => 'no-cache',

@@ -80,6 +80,7 @@
         const newChatBtn = document.getElementById('new-chat-btn');
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
+        // 1. Enviar com Enter / Shift+Enter quebra linha
         messageInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -87,72 +88,130 @@
             }
         });
 
+        // 2. Criar Nova Aba / Sessão de Chat
         newChatBtn.addEventListener('click', async () => {
             const response = await fetch("{{ route('chat.new') }}", { method: 'POST', headers: { 'X-CSRF-TOKEN': csrfToken } });
             const data = await response.json();
             if (data.status === 'success') window.location.href = data.redirect;
         });
 
+        // 3. Evento Principal: Envio com Gerenciamento Assíncrono de Tools
         chatForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const message = messageInput.value.trim();
             if (!message) return;
 
+            // Trava os botões da tela
             messageInput.disabled = true;
             sendBtn.disabled = true;
 
+            // Imprime o balão do usuário imediatamente
             const userMessageId = appendMessage('', 'user');
             document.getElementById(userMessageId).querySelector('.markdown-content').innerHTML = marked.parse(message);
             messageInput.value = '';
             
+            // Cria o balão de carregamento do assistente
             const botMessageId = appendMessage('', 'bot');
             const botMessageDiv = document.getElementById(botMessageId).querySelector('.markdown-content');
+            botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Analisando requisição...</span>';
 
             try {
-                const response = await fetch("{{ route('chat.send', $currentSession->id) }}", {
+                // CHAMADA 1: Envia para o back-end analisar se precisa de Ferramentas (Tools)
+                const analyzeResponse = await fetch("{{ route('chat.send', $currentSession->id) }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
                     body: JSON.stringify({ message: message })
                 });
 
-                if (!response.ok) {
-                    botMessageDiv.innerText = 'Erro no servidor.';
-                    botMessageDiv.classList.add('bg-rose-950', 'text-rose-400');
+                if (!analyzeResponse.ok) {
+                    botMessageDiv.innerText = 'Erro ao processar análise no servidor.';
                     liberarInputs();
                     return;
                 }
 
-                const reader = response.body.getReader();
+                const analyzeData = await analyzeResponse.json();
+                
+                // Variável para acumular o histórico dinâmico que enviaremos para o Stream
+                let currentHistory = [];
+
+                if (analyzeData.status === 'tool_call') {
+                    botMessageDiv.innerHTML = '<span class="text-blue-400 italic animate-pulse">Consultando banco de dados real...</span>';
+                    
+                    // Estrutura o histórico injetando a intenção da IA e o resultado retornado do MySQL
+                    currentHistory = [
+                        analyzeData.choice_message,
+                        {
+                            'role': 'tool',
+                            'tool_call_id': analyzeData.tool_call_id,
+                            'name': analyzeData.function_name,
+                            'content': analyzeData.tool_result
+                        }
+                    ];
+                } else if (analyzeData.status === 'regular_chat') {
+                    botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Digitando...</span>';
+                    // Se for conversa comum, o histórico vai apenas com a mensagem do usuário cadastrada
+                    currentHistory = []; 
+                } else {
+                    botMessageDiv.innerText = 'Erro na resposta estruturada de ferramentas.';
+                    liberarInputs();
+                    return;
+                }
+
+                // CHAMADA 2 (STREAMING): Dispara a conexão de streaming enviando o contexto final gerado
+                const streamResponse = await fetch("{{ route('chat.stream', $currentSession->id) }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                    body: JSON.stringify({ history: currentHistory })
+                });
+
+                if (!streamResponse.ok) {
+                    botMessageDiv.innerText = 'Erro ao inicializar fluxo de streaming.';
+                    liberarInputs();
+                    return;
+                }
+
+                const reader = streamResponse.body.getReader();
                 const decoder = new TextDecoder();
                 let rawResponseText = '';
 
+                // Limpa o texto de "Digitando..." para começar a brotar a resposta real
+                botMessageDiv.innerHTML = '';
+
+                // Loop de leitura caractere por caractere sem travar o timeout do Apache
                 while (true) {
                     const { value, done } = await reader.read();
                     if (done) break;
+                    
                     const chunk = decoder.decode(value, { stream: true });
                     rawResponseText += chunk;
+                    
                     botMessageDiv.innerHTML = marked.parse(rawResponseText);
                     chatBox.scrollTop = chatBox.scrollHeight;
                 }
 
-                if ("{{ $currentSession->title }}" === "Nova conversa") window.location.reload();
+                // Se for o primeiro chat, atualiza a barra lateral para exibir o novo título gerado
+                if ("{{ $currentSession->title }}" === "Nova conversa") {
+                    window.location.reload();
+                }
 
             } catch (error) {
-                botMessageDiv.innerText = 'Erro crítico.';
+                botMessageDiv.innerText = 'Erro crítico de rede ao processar fluxo duplo.';
                 console.error(error);
             } finally {
                 liberarInputs();
             }
         });
 
+        // 4. Excluir Conversa / Aba Ativa
         clearBtn.addEventListener('click', async () => {
-            if(confirm('Excluir esta conversa?')) {
+            if(confirm('Deseja realmente excluir esta conversa e todo o seu histórico?')) {
                 const response = await fetch("{{ route('chat.clear', $currentSession->id) }}", { method: 'POST', headers: { 'X-CSRF-TOKEN': csrfToken } });
                 const data = await response.json();
                 window.location.href = data.redirect;
             }
         });
 
+        // 5. Montagem Dinâmica de Balões na Tela
         function appendMessage(text, role) {
             const wrapper = document.createElement('div');
             const id = 'msg-' + Date.now() + Math.random().toString(36).substr(2, 5);
@@ -170,14 +229,17 @@
             return id;
         }
 
-        function liberarInputs() { messageInput.disabled = false; sendBtn.disabled = false; messageInput.focus(); }
+        function liberarInputs() { 
+            messageInput.disabled = false; 
+            sendBtn.disabled = false; 
+            messageInput.focus(); 
+        }
 
+        // 6. Formata Mensagens Antigas vindas do MySQL no Refresh
         function formatExistingMessages() {
             const messages = document.querySelectorAll('.markdown-content');
-
-            messages.forEach(msg => {
-                const rawText = msg.textContent; 
-                msg.innerHTML = marked.parse(rawText);
+            messages.forEach(msg => { 
+                msg.innerHTML = marked.parse(msg.textContent); 
             });
             chatBox.scrollTop = chatBox.scrollHeight;
         }
