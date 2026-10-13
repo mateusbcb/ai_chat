@@ -8,25 +8,34 @@ use Illuminate\Database\Eloquent\Model;
 class Product extends Model
 {
     use HasFactory;
+    
+    protected $table = 'products';
 
-    protected $fillable = ['title', 'sku', 'price', 'description'];
-
-    /**
-     * Relacionamento: Um produto pode vir de vários fornecedores.
-     */
-    public function suppliers()
-    {
-        return $this->belongsToMany(Supplier::class, 'product_supplier');
-    }
+    protected $fillable = ['title','sku','color','size','weight', 'description','price_base','cd_stock_quantity','status' ];
 
     /**
-     * Relacionamento: Um produto pode estar presente em várias lojas.
-     * Carrega junto a coluna extra 'stock_quantity' da tabela pivô.
+     * Relacionamento: Um produto pode estar estocado em várias lojas/franquias.
      */
     public function stores()
     {
-        return $this->belongsToMany(Store::class, 'product_store')
-                    ->withPivot('stock_quantity')
-                    ->withTimestamps(); // Caso queira rastrear quando o estoque mudou
+        return $this->belongsToMany(Store::class, 'store_products')
+                    ->withPivot(['id', 'quantity', 'price_sale_suggested', 'status'])
+                    ->withTimestamps();
+    }
+
+    /**
+     * Relacionamento: Um produto possui múltiplos históricos de movimentação direta.
+     */
+    public function storeProducts()
+    {
+        return $this->hasMany(StoreProduct::class);
+    }
+
+    /**
+     * Relacionamento: Um produto acumula vários registros de cupons fiscais/vendas.
+     */
+    public function sales()
+    {
+        return $this->hasMany(StoreSale::class);
     }
 }

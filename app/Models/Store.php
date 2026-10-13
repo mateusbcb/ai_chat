@@ -9,16 +9,33 @@ class Store extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['name', 'city', 'state'];
+    protected $table = 'stores';
+
+    protected $fillable = ['name', 'city', 'state', 'phone'];
 
     /**
-     * Relacionamento: Uma franquia possui vários produtos em seu estoque.
-     * Também recupera a coluna extra 'stock_quantity'.
+     * Relacionamento: Uma loja possui vários produtos em seu estoque local.
      */
     public function products()
     {
-        return $this->belongsToMany(Product::class, 'product_store')
-                    ->withPivot('stock_quantity')
+        return $this->belongsToMany(Product::class, 'store_products')
+                    ->withPivot(['id', 'quantity', 'price_sale_suggested', 'status'])
                     ->withTimestamps();
+    }
+
+    /**
+     * Relacionamento: Uma loja possui movimentações de estoque registradas.
+     */
+    public function storeProducts()
+    {
+        return $this->hasMany(StoreProduct::class);
+    }
+
+    /**
+     * Relacionamento: Uma loja emite múltiplos cupons de faturamento/vendas.
+     */
+    public function sales()
+    {
+        return $this->hasMany(StoreSale::class);
     }
 }

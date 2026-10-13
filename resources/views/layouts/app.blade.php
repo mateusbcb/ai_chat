@@ -8,8 +8,18 @@
     
     <!-- TailwindCSS -->
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    
     <!-- Marked.js para converter Markdown em HTML -->
     <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+
+    <!-- CSS do Tema Escuro do Prism (Tomorrow Night) -->
+    <link href="https://cdn.jsdelivr.net/npm/prismjs-tomorrow-theme@0.0.1/prism-tomorrow.min.css" rel="stylesheet">
+
+    <!-- Core do Script do Prism.js -->
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.24.1/components/prism-core.min.js"></script>
+
+    <!-- Componente para dar suporte à linguagem PHP (Opcional, mas recomendado para o seu CRM) -->
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.24.1/components/prism-php.min.js"></script>
     
     <style>
         /* Ajuste fino para a barra de rolagem global do sistema */
@@ -70,15 +80,9 @@
                 <a href="{{ route('stores.index') }}" class="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all {{ Route::is('stores.*') ? 'bg-slate-800 text-white border border-slate-700 shadow-md' : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200' }}">
                     🏢 Lojas
                 </a>
-                <a href="{{ route('suppliers.index') }}" class="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all {{ Route::is('suppliers.*') ? 'bg-slate-800 text-white border border-slate-700 shadow-md' : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200' }}">
-                    🚚 Fornecedores
+                <a href="{{ route('sales.index') }}" class="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all {{ Route::is('sales.*') ? 'bg-slate-800 text-white border border-slate-700 shadow-md' : 'text-slate-400 hover:bg-slate-800/40 hover:text-slate-200' }}">
+                    📊 Auditoria de Vendas
                 </a>
-                <div class="pt-4 mt-4 border-t border-slate-800 flex-shrink-0">
-                    <!-- Botão do menu agora dispara a abertura via ID e não recarrega a página -->
-                    <button id="menu-chat-btn" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg cursor-pointer">
-                        🤖 Assistente Virtual
-                    </button>
-                </div>
             </nav>
         </div>
 

@@ -101,22 +101,22 @@
             const message = messageInput.value.trim();
             if (!message) return;
 
-            // Trava os botões da tela
+            // Trava os inputs e botões na tela para evitar envios duplicados
             messageInput.disabled = true;
             sendBtn.disabled = true;
 
-            // Imprime o balão do usuário imediatamente
+            // Imprime o balão do usuário na tela instantaneamente
             const userMessageId = appendMessage('', 'user');
             document.getElementById(userMessageId).querySelector('.markdown-content').innerHTML = marked.parse(message);
             messageInput.value = '';
             
-            // Cria o balão de carregamento do assistente
+            // Cria o balão de carregamento do assistente na tela
             const botMessageId = appendMessage('', 'bot');
             const botMessageDiv = document.getElementById(botMessageId).querySelector('.markdown-content');
             botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Analisando requisição...</span>';
 
             try {
-                // CHAMADA 1: Envia para o back-end analisar se precisa de Ferramentas (Tools)
+                // CHAMADA 1: Envia para o back-end analisar se precisa acionar alguma Tool do MySQL
                 const analyzeResponse = await fetch("{{ route('chat.send', $currentSession->id) }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
@@ -124,16 +124,15 @@
                 });
 
                 if (!analyzeResponse.ok) {
-                    botMessageDiv.innerText = 'Erro ao processar análise no servidor.';
+                    botMessageDiv.innerText = 'Erro ao processar análise de ferramentas no servidor.';
                     liberarInputs();
                     return;
                 }
 
                 const analyzeData = await analyzeResponse.json();
-                
-                // Variável para acumular o histórico dinâmico que enviaremos para o Stream
                 let currentHistory = [];
 
+                // Verifica a decisão tomada pelo modelo de Tools no Laravel
                 if (analyzeData.status === 'tool_call') {
                     botMessageDiv.innerHTML = '<span class="text-blue-400 italic animate-pulse">Consultando banco de dados real...</span>';
                     
@@ -149,7 +148,7 @@
                     ];
                 } else if (analyzeData.status === 'regular_chat') {
                     botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Digitando...</span>';
-                    // Se for conversa comum, o histórico vai apenas com a mensagem do usuário cadastrada
+                    // Se for conversa comum, o histórico vai limpo (o Laravel reconstrói o padrão no back)
                     currentHistory = []; 
                 } else {
                     botMessageDiv.innerText = 'Erro na resposta estruturada de ferramentas.';
@@ -157,47 +156,63 @@
                     return;
                 }
 
-                // CHAMADA 2 (STREAMING): Dispara a conexão de streaming enviando o contexto final gerado
-                const streamResponse = await fetch("{{ route('chat.stream', $currentSession->id) }}", {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-                    body: JSON.stringify({ history: currentHistory })
-                });
+                // DELAY DE REDE: Aguarda 500ms para estabilizar os buffers locais do WampServer antes de abrir o stream
+                setTimeout(async () => {
+                    try {
+                        // CHAMADA 2 (STREAMING): Abre a conexão de streaming enviando o contexto final gerado
+                        const streamResponse = await fetch("{{ route('chat.stream', $currentSession->id) }}", {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                            body: JSON.stringify({ history: currentHistory })
+                        });
 
-                if (!streamResponse.ok) {
-                    botMessageDiv.innerText = 'Erro ao inicializar fluxo de streaming.';
-                    liberarInputs();
-                    return;
-                }
+                        if (!streamResponse.ok) {
+                            botMessageDiv.innerText = 'Erro ao inicializar fluxo de streaming final.';
+                            liberarInputs();
+                            return;
+                        }
 
-                const reader = streamResponse.body.getReader();
-                const decoder = new TextDecoder();
-                let rawResponseText = '';
+                        const reader = streamResponse.body.getReader();
+                        const decoder = new TextDecoder();
+                        let rawResponseText = '';
 
-                // Limpa o texto de "Digitando..." para começar a brotar a resposta real
-                botMessageDiv.innerHTML = '';
+                        // Limpa o texto de "Digitando..." e inicia a renderização real
+                        botMessageDiv.innerHTML = '';
 
-                // Loop de leitura caractere por caractere sem travar o timeout do Apache
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value, { stream: true });
-                    rawResponseText += chunk;
-                    
-                    botMessageDiv.innerHTML = marked.parse(rawResponseText);
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                }
+                        // Loop de leitura caractere por caractere vindo do stream do PHP
+                        while (true) {
+                            const { value, done } = await reader.read();
+                            if (done) break;
+                            
+                            const chunk = decoder.decode(value, { stream: true });
+                            rawResponseText += chunk;
+                            
+                            botMessageDiv.innerHTML = marked.parse(rawResponseText);
+                            chatBox.scrollTop = chatBox.scrollHeight;
+                        }
 
-                // Se for o primeiro chat, atualiza a barra lateral para exibir o novo título gerado
-                if ("{{ $currentSession->title }}" === "Nova conversa") {
-                    window.location.reload();
-                }
+                        // Força o realce de sintaxe colorido do Prism.js após o término do streaming
+                        if (typeof Prism !== 'undefined') {
+                            Prism.highlightAll();
+                        }
+
+                        // Se for uma conversa nova, recarrega a página para atualizar o título gerado na Sidebar
+                        if ("{{ $currentSession->title }}" === "Nova conversa") {
+                            window.location.reload();
+                        }
+
+                    } catch (streamError) {
+                        botMessageDiv.innerText = 'Erro crítico de rede na transmissão do fluxo de texto.';
+                        console.error(streamError);
+                        liberarInputs();
+                    } finally {
+                        liberarInputs();
+                    }
+                }, 500);
 
             } catch (error) {
                 botMessageDiv.innerText = 'Erro crítico de rede ao processar fluxo duplo.';
                 console.error(error);
-            } finally {
                 liberarInputs();
             }
         });
@@ -241,6 +256,8 @@
             messages.forEach(msg => { 
                 msg.innerHTML = marked.parse(msg.textContent); 
             });
+            // Força o Prism a colorir todos os blocos de código renderizados na página
+            Prism.highlightAll(); 
             chatBox.scrollTop = chatBox.scrollHeight;
         }
         

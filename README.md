@@ -33,4 +33,14 @@ Para conversas comuns é usado uma LLM e para uso de TOOLS outra LLM.
 <br>
 
 ## versão 6
+Troca de Scopo do projeto. <br>
+Agora o Projeto se trata de um centro de distribuição, CD, com estoque dos produtos, lojas e suas auditorias de vendas (estoque nas lojas e preço de venda), e Status do produto, tanto no CD como nas lojas. <br>
+
+<br>
+
+Ajuste No Front e no Back assim como nas migrations e TOOL´s
+
+<br>
+
+## versão 7
 (...)
