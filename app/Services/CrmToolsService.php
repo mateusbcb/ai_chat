@@ -212,6 +212,22 @@ class CrmToolsService
                         ]
                     ]
                 ]
+            ],
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'transferir_estoque_cd_para_loja',
+                    'description' => 'Realiza a transferência física e legal de um lote de produtos do Centro de Distribuição Central (CD Matriz) para o estoque local de uma franquia regional.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'sku' => ['type' => 'string', 'description' => 'O código SKU único do produto a ser transferido.'],
+                            'store_id' => ['type' => 'integer', 'description' => 'O ID numérico real da franquia/loja de destino.'],
+                            'quantidade' => ['type' => 'integer', 'description' => 'A quantidade de peças físicas a serem retiradas do CD e enviadas à filial.']
+                        ],
+                        'required' => ['sku', 'store_id', 'quantidade']
+                    ]
+                ]
             ]
         ];
     }
@@ -564,6 +580,77 @@ class CrmToolsService
 
                 return "Relatório de Auditoria de Avarias e Quebras do MySQL:\n" . $linhas;
 
+            // ====================================================================
+            // MUTATIONS - TRANSFERÊNCIAS LOGÍSTICAS (WMS COMPLEXO)
+            // ====================================================================
+            case 'transferir_estoque_cd_para_loja':
+                $sku = strtoupper(trim($arguments['sku'] ?? ''));
+                $storeId = (int)($arguments['store_id'] ?? 0);
+                $quantidade = (int)($arguments['quantidade'] ?? 0);
+
+                if ($quantidade <= 0) {
+                    return "Erro de validação: A quantidade para transferência precisa ser maior que zero. Você informou: {$quantidade}.";
+                }
+
+                // 1. Busca se o produto e a loja de fato existem no MySQL
+                $product = \App\Models\Product::where('sku', $sku)->first();
+                $store = \App\Models\Store::find($storeId);
+
+                if (!$product) {
+                    return "Aviso logístico: O produto com o SKU '{$sku}' não foi localizado no catálogo do CD Central.";
+                }
+                if (!$store) {
+                    return "Aviso logístico: A franquia com o ID #{$storeId} não foi localizada no mapa de filiais.";
+                }
+
+                // 2. Validação estrita de saldo pulmão no CD Central
+                if ($product->cd_stock_quantity < $quantidade) {
+                    return "Bloqueio de Estoque: Transferência negada. O CD Central possui apenas {$product->cd_stock_quantity} unidades em estoque do SKU '{$sku}', mas você tentou transferir {$quantidade} unidades. Operação abortada por falta de saldo.";
+                }
+
+                // 3. Inicia a transação atômica segura no MySQL
+                DB::beginTransaction();
+                try {
+                    // Subtrai a quantidade do estoque pulmão da Matriz (CD)
+                    $product->decrement('cd_stock_quantity', $quantidade);
+
+                    // Verifica se essa loja já possui esse produto em seu catálogo local
+                    $existingPivot = DB::table('store_products')
+                        ->where('store_id', $storeId)
+                        ->where('product_id', $product->id)
+                        ->first();
+
+                    if ($existingPivot) {
+                        // Se já existe o registro da grade na loja, incrementa o saldo local
+                        DB::table('store_products')
+                            ->where('store_id', $storeId)
+                            ->where('product_id', $product->id)
+                            ->update([
+                                'quantity' => $existingPivot->quantity + $quantidade,
+                                'status' => 'em_transito', // O lote entra em estado de viagem
+                                'updated_at' => now()
+                            ]);
+                    } else {
+                        // Se é a primeira vez que a loja recebe o item, cria o registro pivô do zero
+                        DB::table('store_products')->insert([
+                            'store_id' => $storeId,
+                            'product_id' => $product->id,
+                            'quantity' => $quantidade,
+                            'price_sale_suggested' => round($product->price_base * 1.50, 2), // Margem padrão
+                            'status' => 'em_transito',
+                            'created_at' => now(),
+                            'updated_at' => now()
+                        ]);
+                    }
+
+                    DB::commit();
+                    return "Sucesso Logístico: Transferência concluída no MySQL! Foram retiradas {$quantidade} unidades do SKU '{$sku}' do CD Central e despachadas em trânsito para a Filial '{$store->name}' (ID #{$storeId}). O saldo atual da Matriz para este item agora é de " . ($product->cd_stock_quantity) . " un.";
+
+                } catch (\Exception $e) {
+                    DB::rollBack();
+                    return "Erro crítico de integridade ao processar transferência no MySQL: " . $e->getMessage();
+                }
+                
             // FECHAMENTO SEGURO DO ARQUIVO
             default:
                 return "Erro técnico: A ferramenta '{$functionName}' não possui mapeamento de execução no back-end.";

@@ -80,6 +80,13 @@
         const newChatBtn = document.getElementById('new-chat-btn');
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
+        // CONFIGURAÇÃO ADVANCED DO MARKED: Permite que tags HTML e estilos inline digitados pela IA passem direto para a tela
+        marked.setOptions({
+            html: true,        // Permite tags HTML reais nas respostas
+            breaks: true,      // Converte quebras de linha em <br>
+            sanitize: false    // DESATIVA a limpeza rígida de tags HTML (Cuidado de nível sênior liberado)
+        });
+
         // 1. Enviar com Enter / Shift+Enter quebra linha
         messageInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -253,11 +260,16 @@
         // 6. Formata Mensagens Antigas vindas do MySQL no Refresh
         function formatExistingMessages() {
             const messages = document.querySelectorAll('.markdown-content');
-            messages.forEach(msg => { 
+            
+            messages.forEach(msg => {
                 msg.innerHTML = marked.parse(msg.textContent); 
             });
-            // Força o Prism a colorir todos os blocos de código renderizados na página
-            Prism.highlightAll(); 
+            
+            if (typeof Prism !== 'undefined') {
+                // Força o Prism a colorir todos os blocos de código renderizados na página
+                Prism.highlightAll(); 
+            }
+            
             chatBox.scrollTop = chatBox.scrollHeight;
         }
         

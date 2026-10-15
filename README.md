@@ -43,4 +43,11 @@ Ajuste No Front e no Back assim como nas migrations e TOOL´s
 <br>
 
 ## versão 7
+Adicionado Ao TOOLS da LLM a possibilidade de fazer transferencia de produtos para a loja. <br>
+Ajustado o Chat aceitar código HTML puro. <br>
+Pausa na criação das TOOLS, para implementar o uso de Modelo Local com o LM Studio e na nuvem com o Open AI.
+
+<br>
+
+## Versão 8
 (...)
