@@ -55,4 +55,4 @@ Adaptado para usar tanto Local como o uso da OPENAI.
 <br>
 
 ## Versão 9
-(...)
+Adicionado TOOLS para Gerar Imagens
