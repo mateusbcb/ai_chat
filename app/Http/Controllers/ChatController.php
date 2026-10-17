@@ -55,7 +55,7 @@ class ChatController extends Controller
         $request->validate(['message' => 'required|string']);
         $userMessage = $request->input('message');
         
-        $session = ChatSession::findOrFail($id);
+        $session = \App\Models\ChatSession::findOrFail($id);
 
         if ($session->title === 'Nova conversa') {
             $session->update(['title' => substr($userMessage, 0, 25) . '...']);
@@ -64,14 +64,14 @@ class ChatController extends Controller
         }
 
         // Salva a mensagem do usuário no MySQL
-        Message::create([
+        \App\Models\Message::create([
             'role' => 'user',
             'content' => trim(json_encode($userMessage), '"'),
             'chat_session_id' => $id
         ]);
 
         // Carrega o histórico acumulado
-        $rawHistory = Message::where('chat_session_id', $id)
+        $rawHistory = \App\Models\Message::where('chat_session_id', $id)
             ->orderBy('created_at', 'asc')
             ->get(['role', 'content'])
             ->map(function ($message) {
@@ -85,27 +85,39 @@ class ChatController extends Controller
         $systemPromptPath = resource_path('markdown/project_context.md');
         $systemContent = file_exists($systemPromptPath) ? file_get_contents($systemPromptPath) : '';
 
-        // MONTADOR DE HISTÓRICO CORRETO: Inicia com o System e adiciona itens no fim sem quebrar o array
+        // MONTADOR DE HISTÓRICO CORRETO
         $history = [['role' => 'system', 'content' => trim($systemContent)]];
         foreach ($rawHistory as $msg) {
             $lastIdx = count($history) - 1;
             if ($lastIdx >= 0 && $history[$lastIdx]['role'] === $msg['role']) {
                 $history[$lastIdx]['content'] .= "\n" . $msg['content'];
             } else {
-                $history[] = $msg; // <-- CORREÇÃO: Uso do colchete [] para empurrar no fim do array de forma nativa
+                $history[] = $msg;
             }
         }
 
-        $client = new Client();
-        $baseUrl = env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1');
-        $modelTools = env('LM_STUDIO_MODEL_TOOLS'); 
+        $client = new \GuzzleHttp\Client();
         
+        // CONFIGURADOR DINÂMICO DE PROVEDOR (LOCAL VS OPENAI)
+        $provider = env('AI_PROVIDER', 'local');
+        $headers = ['Content-Type' => 'application/json'];
+
+        if ($provider === 'openai') {
+            $baseUrl    = env('OPENAI_BASE_URL', 'https://api.openai.com/v1');
+            $modelTools = env('OPENAI_MODEL', 'gpt-4o-mini');
+            $headers['Authorization'] = 'Bearer ' . env('OPENAI_API_KEY');
+        } else {
+            $baseUrl    = env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1');
+            $modelTools = env('LM_STUDIO_MODEL_TOOLS');
+        }
+
         $toolsService = new \App\Services\CrmToolsService();
         $toolsManifest = $toolsService->getToolsManifest();
 
         try {
-            // Requisição estática de análise de intenção de ferramentas
+            // Requisição de análise estática de intenção de ferramentas
             $response = $client->post($baseUrl . '/chat/completions', [
+                'headers' => $headers,
                 'json' => [
                     'model' => $modelTools,
                     'messages' => $history,
@@ -113,23 +125,25 @@ class ChatController extends Controller
                     'tool_choice' => 'auto',
                     'stream' => false
                 ],
-                'http_errors' => false
+                'http_errors' => true,
+                'verify' => false
             ]);
 
             $responseData = json_decode($response->getBody(), true);
             $choiceMessage = $responseData['choices'][0]['message'] ?? null;
 
-            if ($choiceMessage && isset($choiceMessage['tool_calls'])) {
+            // BLINDAGEM: Garante que as tool_calls existam e NÃO venham como array vazio
+            if ($choiceMessage && isset($choiceMessage['tool_calls']) && !empty($choiceMessage['tool_calls'])) {
                 $rawCalls = $choiceMessage['tool_calls'];
-                $toolCall = isset($rawCalls[0]) ? $rawCalls[0] : $rawCalls;
-                $functionName = $toolCall['function']['name'] ?? $choiceMessage['function']['name'] ?? null;
+                $toolCall = is_array($rawCalls) ? $rawCalls[0] : $rawCalls;
+                $functionName = $toolCall['function']['name'] ?? null;
 
                 if ($functionName) {
                     $arguments = is_string($toolCall['function']['arguments'] ?? '') 
                         ? json_decode($toolCall['function']['arguments'], true) 
                         : ($toolCall['function']['arguments'] ?? []);
 
-                    // Executa o serviço que consulta as tabelas do MySQL reais
+                    // Executa o serviço que consulta ou altera as tabelas do MySQL
                     $toolResult = $toolsService->execute($functionName, $arguments);
 
                     return response()->json([
@@ -150,16 +164,18 @@ class ChatController extends Controller
     }
 
     /**
-     * Rota 2: Executa exclusivamente o streaming de texto com o modelo focado em CHAT.
+     * Rota 2: Executa o streaming de texto (Server-Sent Events) compatível com LM Studio e OpenAI.
      */
     public function streamResponse(Request $request, $id)
     {
+        // Força o PHP a não derrubar a conexão por timeout durante o streaming
         set_time_limit(0);
+        
         $historyInput = $request->input('history', []);
 
-        // Se o histórico não veio processado do Front, reconstrói o padrão local de segurança
+        // Se o histórico veio vazio do Front (Conversa comum), reconstrói a base do MySQL
         if (empty($historyInput)) {
-            $rawHistory = Message::where('chat_session_id', $id)
+            $rawHistory = \App\Models\Message::where('chat_session_id', $id)
                 ->orderBy('created_at', 'asc')
                 ->get(['role', 'content'])
                 ->map(function ($message) {
@@ -179,60 +195,100 @@ class ChatController extends Controller
                 if ($lastIdx >= 0 && $historyInput[$lastIdx]['role'] === $msg['role']) {
                     $historyInput[$lastIdx]['content'] .= "\n" . $msg['content'];
                 } else {
-                    $historyInput[] = $msg; // <-- CORREÇÃO: Uso de [] garantido também na reconstrução
+                    $historyInput[] = $msg;
                 }
             }
         }
 
-        return new StreamedResponse(function () use ($historyInput, $id) {
-            $client = new Client();
-            $baseUrl = env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1');
-            $modelChat = env('LM_STUDIO_MODEL_CHAT'); 
+        // MÁSCARA DE JINJA: Converte o papel 'tool' em 'user' para evitar erro 400 no Gemma
+        if (!empty($historyInput)) {
+            foreach ($historyInput as $key => $msg) {
+                if (isset($msg['role']) && $msg['role'] === 'tool') {
+                    $historyInput[$key]['role'] = 'user';
+                    $historyInput[$key]['content'] = "[DADOS REAIS DO SISTEMA WMS]:\n" . $msg['content'];
+                }
+            }
+        }
+
+        return new \Symfony\Component\HttpFoundation\StreamedResponse(function () use ($historyInput, $id) {
+            $client = new \GuzzleHttp\Client();
+
+            $provider = env('AI_PROVIDER', 'local');
+            $headers = [
+                'Content-Type'  => 'application/json',
+                'Cache-Control' => 'no-cache',
+            ];
+
+            if ($provider === 'openai') {
+                $baseUrl   = rtrim(env('OPENAI_BASE_URL', 'https://api.openai.com/v1'), '/');
+                $modelChat = env('OPENAI_MODEL', 'gpt-4o-mini');
+                $headers['Authorization'] = 'Bearer ' . env('OPENAI_API_KEY');
+            } else {
+                $baseUrl   = rtrim(env('LM_STUDIO_BASE_URL', 'http://localhost:1234/v1'), '/');
+                $modelChat = env('LM_STUDIO_MODEL_CHAT');
+            }
 
             try {
-                // CORREÇÃO: Endpoint limpo unificado sem repetições de /v1/v1
+                // Abre a requisição de streaming com a API
                 $response = $client->post($baseUrl . '/chat/completions', [
-                    'json' => [
-                        'model' => $modelChat,
+                    'headers'     => $headers,
+                    'json'        => [
+                        'model'    => $modelChat,
                         'messages' => $historyInput,
-                        'stream' => true
+                        'stream'   => true
                     ],
-                    'stream' => true,
-                    'http_errors' => false
+                    'stream'      => true,
+                    'http_errors' => true,
+                    'verify'      => false // Mantido falso para evitar travas de ambiente local
                 ]);
 
                 $body = $response->getBody();
                 $fullResponseText = "";
+                $buffer = "";
 
+                // CORREÇÃO MESTRA: Lê os pacotes da rede em blocos de até 1024 bytes (Blindagem HTTPS)
                 while (!$body->eof()) {
-                    $line = '';
-                    while (!$body->eof()) {
-                        $char = $body->read(1);
-                        if ($char === "\n") break;
-                        $line .= $char;
-                    }
-                    $line = trim($line);
+                    $chunk = $body->read(1024);
+                    $buffer .= $chunk;
 
-                    if (strpos($line, 'data: ') === 0) {
-                        $dataText = substr($line, 6);
-                        if ($dataText === '[DONE]') break;
+                    // Quebra o buffer acumulado por linhas reais de rede (\n)
+                    while (($pos = strpos($buffer, "\n")) !== false) {
+                        $line = substr($buffer, 0, $pos);
+                        $buffer = substr($buffer, $pos + 1);
+                        $line = trim($line);
 
-                        $data = json_decode($dataText, true);
-                        if (isset($data['choices'][0]['delta']['content'])) {
-                            $content = $data['choices'][0]['delta']['content'];
-                            $fullResponseText .= $content;
+                        // Se a linha começar com o marcador de dados do EventStream
+                        if (strpos($line, 'data: ') === 0) {
+                            $dataText = trim(substr($line, 6));
 
-                            echo $content;
-                            if (ob_get_level() > 0) ob_flush();
-                            flush();
+                            // Se chegou ao fim do streaming oficial da OpenAI
+                            if ($dataText === '[DONE]') {
+                                break 2;
+                            }
+
+                            $data = json_decode($dataText, true);
+                            $content = $data['choices'][0]['delta']['content'] ?? null;
+
+                            if ($content !== null) {
+                                $fullResponseText .= $content;
+
+                                // Cospe o fragmento de texto imediatamente para o JavaScript na tela
+                                echo $content;
+                                
+                                if (ob_get_level() > 0) {
+                                    ob_flush();
+                                }
+                                flush();
+                            }
                         }
                     }
                 }
 
+                // Grava o consolidado final da resposta da IA no banco de dados MySQL
                 if (!empty(trim($fullResponseText))) {
-                    Message::create([
-                        'role' => 'assistant',
-                        'content' => trim(json_encode($fullResponseText), '"'),
+                    \App\Models\Message::create([
+                        'role'            => 'assistant',
+                        'content'         => trim(json_encode($fullResponseText), '"'),
                         'chat_session_id' => $id
                     ]);
                 }
@@ -241,8 +297,8 @@ class ChatController extends Controller
                 echo "Erro no streaming final: " . $e->getMessage();
             }
         }, 200, [
-            'Cache-Control' => 'no-cache',
-            'Content-Type' => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'Content-Type'      => 'text/event-stream',
             'X-Accel-Buffering' => 'no',
         ]);
     }

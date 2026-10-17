@@ -50,4 +50,9 @@ Pausa na criação das TOOLS, para implementar o uso de Modelo Local com o LM St
 <br>
 
 ## Versão 8
+Adaptado para usar tanto Local como o uso da OPENAI.
+
+<br>
+
+## Versão 9
 (...)
