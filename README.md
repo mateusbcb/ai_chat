@@ -56,3 +56,12 @@ Adaptado para usar tanto Local como o uso da OPENAI.
 
 ## Versão 9
 Adicionado TOOLS para Gerar Imagens
+
+## Versão 10
+Criado o sistema de RAG e Banco de vetores. <br>
+O uso do RAG se tornou uma TOOLS, assim a LLM analisa a pergunta do usuário para saber se necessita usar o RAG.
+
+<br>
+
+## Versão 11
+(...)

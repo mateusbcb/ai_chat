@@ -245,6 +245,23 @@ class CrmToolsService
                         'required' => ['prompt']
                     ]
                 ]
+            ],
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'consultar_manual_regras_wms',
+                    'description' => 'Busca diretrizes, normas, políticas internas, protocolos de segurança e instruções operacionais dentro do manual de texto não-estruturado do Centro de Distribuição (RAG). Use sempre que o usuário tiver dúvidas conceituais de como agir ou sobre regras do sistema.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'pergunta' => [
+                                'type' => 'string',
+                                'description' => 'A dúvida exata ou palavra-chave conceitual digitada pelo usuário para busca semântica (ex: "procedimento para quebra de estoque").'
+                            ]
+                        ],
+                        'required' => ['pergunta']
+                    ]
+                ]
             ]
         ];
     }
@@ -732,6 +749,29 @@ class CrmToolsService
                     return "Nota de Contingência: O servidor de imagem local não respondeu a tempo. Exiba para o usuário esta imagem conceitual do Hub de Distribuição utilizando a tag HTML:\n" .
                            "<div class='my-4 bg-slate-900 p-2 border border-slate-700 rounded-2xl max-w-sm overflow-hidden shadow-xl'><img src='{$publicUrl}' class='w-full h-auto rounded-xl shadow-inner' alt='Imagem Conceitual'></div>";
                 }
+
+            // ====================================================================
+            // KNOWLEDGE - BUSCA SEMÂNTICA NO BANCO DE VETORES (RAG)
+            // ====================================================================
+            case 'consultar_manual_regras_wms':
+                $pergunta = trim($arguments['pergunta'] ?? '');
+
+                if (empty($pergunta)) {
+                    return "Aviso técnico: O termo de busca semântica veio vazio.";
+                }
+
+                // Instancia o serviço de RAG que criamos na etapa anterior
+                $ragService = app(\App\Services\CrmRagService::class);
+                
+                // Executa a busca matemática de Cosseno no MySQL trazendo os 2 parágrafos mais parecidos
+                $contextoExtraido = $ragService->searchRelevantContext($pergunta, 2);
+
+                if (empty($contextoExtraido)) {
+                    return "Dados do MySQL: Nenhuma regra ou diretriz específica sobre '{$pergunta}' foi localizada no manual de conformidade atual.";
+                }
+
+                // Retorna os parágrafos crus do manual. A IA de chat lerá isso e responderá ao usuário de forma humana!
+                return "Trechos relevantes localizados no Manual do CD para a dúvida '{$pergunta}':\n\n" . $contextoExtraido;
                 
             // FECHAMENTO SEGURO DO ARQUIVO
             default:
