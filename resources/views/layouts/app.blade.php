@@ -20,6 +20,9 @@
 
     <!-- Componente para dar suporte à linguagem PHP (Opcional, mas recomendado para o seu CRM) -->
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.24.1/components/prism-php.min.js"></script>
+
+    <!-- CDN do Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <style>
         /* Ajuste fino para a barra de rolagem global do sistema */

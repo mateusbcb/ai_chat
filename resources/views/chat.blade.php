@@ -72,207 +72,233 @@
 
     <!-- Scripts originais e estáveis preservados -->
     <script>
-        const chatForm = document.getElementById('chat-form');
-        const messageInput = document.getElementById('message-input');
-        const chatBox = document.getElementById('chat-box');
-        const clearBtn = document.getElementById('clear-btn');
-        const sendBtn = document.getElementById('send-btn');
-        const newChatBtn = document.getElementById('new-chat-btn');
-        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+         // ====================================================================
+    // CONFIGURAÇÃO GLOBAL DO MARKED (PERMITE HTML PURO DA IA)
+    // ====================================================================
+    marked.setOptions({
+        html: true,
+        breaks: true,
+        sanitize: false
+    });
 
-        // CONFIGURAÇÃO ADVANCED DO MARKED: Permite que tags HTML e estilos inline digitados pela IA passem direto para a tela
-        marked.setOptions({
-            html: true,        // Permite tags HTML reais nas respostas
-            breaks: true,      // Converte quebras de linha em <br>
-            sanitize: false    // DESATIVA a limpeza rígida de tags HTML (Cuidado de nível sênior liberado)
-        });
+    // Elementos de Interface
+    const chatBox = document.getElementById('chat-box');
+    const chatForm = document.getElementById('chat-form');
+    const messageInput = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
-        // 1. Enviar com Enter / Shift+Enter quebra linha
-        messageInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                chatForm.dispatchEvent(new Event('submit'));
-            }
-        });
+    // ====================================================================
+    // 1. RENDERIZADOR DE GRÁFICOS DO CHART.JS
+    // ====================================================================
+    function renderChartsInChat() {
+        if (typeof Chart === 'undefined') return;
 
-        // 2. Criar Nova Aba / Sessão de Chat
-        newChatBtn.addEventListener('click', async () => {
-            const response = await fetch("{{ route('chat.new') }}", { method: 'POST', headers: { 'X-CSRF-TOKEN': csrfToken } });
-            const data = await response.json();
-            if (data.status === 'success') window.location.href = data.redirect;
-        });
-
-        // 3. Evento Principal: Envio com Gerenciamento Assíncrono de Tools
-        chatForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const message = messageInput.value.trim();
-            if (!message) return;
-
-            // Trava os inputs e botões na tela para evitar envios duplicados
-            messageInput.disabled = true;
-            sendBtn.disabled = true;
-
-            // Imprime o balão do usuário na tela instantaneamente
-            const userMessageId = appendMessage('', 'user');
-            document.getElementById(userMessageId).querySelector('.markdown-content').innerHTML = marked.parse(message);
-            messageInput.value = '';
-            
-            // Cria o balão de carregamento do assistente na tela
-            const botMessageId = appendMessage('', 'bot');
-            const botMessageDiv = document.getElementById(botMessageId).querySelector('.markdown-content');
-            botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Analisando requisição...</span>';
-
-            try {
-                // CHAMADA 1: Envia para o back-end analisar se precisa acionar alguma Tool do MySQL
-                const analyzeResponse = await fetch("{{ route('chat.send', $currentSession->id) }}", {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-                    body: JSON.stringify({ message: message })
-                });
-
-                if (!analyzeResponse.ok) {
-                    botMessageDiv.innerText = 'Erro ao processar análise de ferramentas no servidor.';
-                    liberarInputs();
-                    return;
-                }
-
-                const analyzeData = await analyzeResponse.json();
-                let currentHistory = [];
-
-                // Verifica a decisão tomada pelo modelo de Tools no Laravel
-                if (analyzeData.status === 'tool_call') {
-                    botMessageDiv.innerHTML = '<span class="text-blue-400 italic animate-pulse">Consultando banco de dados real...</span>';
-                    
-                    // Estrutura o histórico injetando a intenção da IA e o resultado retornado do MySQL
-                    currentHistory = [
-                        analyzeData.choice_message,
-                        {
-                            'role': 'tool',
-                            'tool_call_id': analyzeData.tool_call_id,
-                            'name': analyzeData.function_name,
-                            'content': analyzeData.tool_result
-                        }
-                    ];
-                } else if (analyzeData.status === 'regular_chat') {
-                    botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Digitando...</span>';
-                    // Se for conversa comum, o histórico vai limpo (o Laravel reconstrói o padrão no back)
-                    currentHistory = []; 
-                } else {
-                    botMessageDiv.innerText = 'Erro na resposta estruturada de ferramentas.';
-                    liberarInputs();
-                    return;
-                }
-
-                // DELAY DE REDE: Aguarda 500ms para estabilizar os buffers locais do WampServer antes de abrir o stream
-                setTimeout(async () => {
-                    try {
-                        // CHAMADA 2 (STREAMING): Abre a conexão de streaming enviando o contexto final gerado
-                        const streamResponse = await fetch("{{ route('chat.stream', $currentSession->id) }}", {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-                            body: JSON.stringify({ history: currentHistory })
-                        });
-
-                        if (!streamResponse.ok) {
-                            botMessageDiv.innerText = 'Erro ao inicializar fluxo de streaming final.';
-                            liberarInputs();
-                            return;
-                        }
-
-                        const reader = streamResponse.body.getReader();
-                        const decoder = new TextDecoder();
-                        let rawResponseText = '';
-
-                        // Limpa o texto de "Digitando..." e inicia a renderização real
-                        botMessageDiv.innerHTML = '';
-
-                        // Loop de leitura caractere por caractere vindo do stream do PHP
-                        while (true) {
-                            const { value, done } = await reader.read();
-                            if (done) break;
-                            
-                            const chunk = decoder.decode(value, { stream: true });
-                            rawResponseText += chunk;
-                            
-                            botMessageDiv.innerHTML = marked.parse(rawResponseText);
-                            chatBox.scrollTop = chatBox.scrollHeight;
-                        }
-
-                        // Força o realce de sintaxe colorido do Prism.js após o término do streaming
-                        if (typeof Prism !== 'undefined') {
-                            Prism.highlightAll();
-                        }
-
-                        // Se for uma conversa nova, recarrega a página para atualizar o título gerado na Sidebar
-                        if ("{{ $currentSession->title }}" === "Nova conversa") {
-                            window.location.reload();
-                        }
-
-                    } catch (streamError) {
-                        botMessageDiv.innerText = 'Erro crítico de rede na transmissão do fluxo de texto.';
-                        console.error(streamError);
-                        liberarInputs();
-                    } finally {
-                        liberarInputs();
-                    }
-                }, 500);
-
-            } catch (error) {
-                botMessageDiv.innerText = 'Erro crítico de rede ao processar fluxo duplo.';
-                console.error(error);
-                liberarInputs();
-            }
-        });
-
-        // 4. Excluir Conversa / Aba Ativa
-        clearBtn.addEventListener('click', async () => {
-            if(confirm('Deseja realmente excluir esta conversa e todo o seu histórico?')) {
-                const response = await fetch("{{ route('chat.clear', $currentSession->id) }}", { method: 'POST', headers: { 'X-CSRF-TOKEN': csrfToken } });
-                const data = await response.json();
-                window.location.href = data.redirect;
-            }
-        });
-
-        // 5. Montagem Dinâmica de Balões na Tela
-        function appendMessage(text, role) {
-            const wrapper = document.createElement('div');
-            const id = 'msg-' + Date.now() + Math.random().toString(36).substr(2, 5);
-            wrapper.id = id;
-
-            if (role === 'user') {
-                wrapper.className = 'flex justify-end gap-3 pl-12';
-                wrapper.innerHTML = `<div class="flex flex-col items-end"><div class="max-w-xl p-3.5 rounded-2xl rounded-tr-none bg-blue-600 text-white text-sm shadow-md prose markdown-content">${text}</div><span class="text-[10px] text-slate-500 mt-1 mr-1">Você</span></div>`;
-            } else {
-                wrapper.className = 'flex justify-start gap-3 pr-12';
-                wrapper.innerHTML = `<div class="flex flex-col items-start max-w-full"><div class="max-w-xl p-3.5 rounded-2xl rounded-tl-none bg-slate-700 text-slate-100 text-sm border border-slate-600/50 shadow-md prose markdown-content break-words">${text}</div><span class="text-[10px] text-slate-500 mt-1 ml-1">Assistente</span></div>`;
-            }
-            chatBox.appendChild(wrapper);
-            chatBox.scrollTop = chatBox.scrollHeight;
-            return id;
-        }
-
-        function liberarInputs() { 
-            messageInput.disabled = false; 
-            sendBtn.disabled = false; 
-            messageInput.focus(); 
-        }
-
-        // 6. Formata Mensagens Antigas vindas do MySQL no Refresh
-        function formatExistingMessages() {
-            const messages = document.querySelectorAll('.markdown-content');
-            
-            messages.forEach(msg => {
-                msg.innerHTML = marked.parse(msg.textContent); 
-            });
-            
-            if (typeof Prism !== 'undefined') {
-                // Força o Prism a colorir todos os blocos de código renderizados na página
-                Prism.highlightAll(); 
-            }
-            
-            chatBox.scrollTop = chatBox.scrollHeight;
-        }
+        const canvases = document.querySelectorAll('.ai-chart-canvas:not([data-rendered="true"])');
         
-        formatExistingMessages();
+        canvases.forEach(canvas => {
+            try {
+                const rawData = canvas.getAttribute('data-chart-json');
+                const config = JSON.parse(rawData);
+                
+                new Chart(canvas, {
+                    type: config.type || 'bar',
+                    data: {
+                        labels: config.labels || [],
+                        datasets: [{
+                            label: config.datasetLabel || 'Métricas WMS',
+                            data: config.data || [],
+                            backgroundColor: config.type === 'pie' || config.type === 'doughnut'
+                                ? ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
+                                : '#3b82f6',
+                            borderColor: '#2563eb',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { labels: { color: '#94a3b8' } }
+                        },
+                        scales: config.type === 'pie' || config.type === 'doughnut' ? {} : {
+                            y: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+                            x: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+                        }
+                    }
+                });
+                
+                canvas.setAttribute('data-rendered', 'true');
+            } catch (err) {
+                console.error("Erro ao renderizar gráfico:", err);
+            }
+        });
+    }
+
+    // Auxiliares de Gerenciamento da Tela
+    function liberarInputs() {
+        messageInput.disabled = false;
+        sendBtn.disabled = false;
+        messageInput.focus();
+    }
+
+    function appendMessage(content, role) {
+        const id = 'msg_' + Math.random().toString(36).substr(2, 9);
+        const isUser = role === 'user';
+        
+        const html = `
+            <div class="flex ${isUser ? 'justify-end' : 'justify-start'} mb-4 animate-fade-in" id="${id}">
+                <div class="max-w-[75%] rounded-2xl p-4 shadow-md ${isUser ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-100 border border-slate-700 rounded-bl-none'}">
+                    <div class="text-[10px] uppercase font-bold tracking-wider mb-1 ${isUser ? 'text-blue-200' : 'text-slate-400'}">
+                        ${isUser ? 'Você' : 'Assistente Nexus'}
+                    </div>
+                    <div class="markdown-content text-sm leading-relaxed whitespace-pre-line">${content}</div>
+                </div>
+            </div>
+        `;
+        
+        chatBox.insertAdjacentHTML('beforeend', html);
+        return id;
+    }
+
+    function formatExistingMessages() {
+        const messages = document.querySelectorAll('.markdown-content');
+        messages.forEach(msg => { 
+            msg.innerHTML = marked.parse(msg.textContent); 
+        });
+        
+        // Ativa os scripts visuais após formatar o histórico
+        renderChartsInChat();
+        if (typeof Prism !== 'undefined') {
+            Prism.highlightAll(); 
+        }
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // ====================================================================
+    // 2. INTERCEPTADOR DE TECLADO: ENTER ENVIA E SHIFT+ENTER PULA LINHA
+    // ====================================================================
+    messageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault(); // Bloqueia a quebra de linha nativa do textarea
+            chatForm.requestSubmit(); // Força o disparo do formulário oficial
+        }
+    });
+
+    // ====================================================================
+    // 3. EVENTO DE SUBMIT (PROCESSO DE FLUXO LOGÍSTICO COMPLETO)
+    // ====================================================================
+    chatForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const message = messageInput.value.trim();
+        if (!message) return;
+
+        messageInput.disabled = true;
+        sendBtn.disabled = true;
+
+        const userMessageId = appendMessage('', 'user');
+        document.getElementById(userMessageId).querySelector('.markdown-content').innerHTML = marked.parse(message);
+        messageInput.value = '';
+        
+        const botMessageId = appendMessage('', 'bot');
+        const botMessageDiv = document.getElementById(botMessageId).querySelector('.markdown-content');
+        botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Analisando requisição...</span>';
+
+        try {
+            // CORREÇÃO: Removidas as barras invertidas de escape das tags do Blade
+            const analyzeResponse = await fetch("{{ route('chat.send', $currentSession->id) }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                body: JSON.stringify({ message: message })
+            });
+
+            if (!analyzeResponse.ok) {
+                botMessageDiv.innerText = 'Erro ao processar análise de ferramentas no servidor.';
+                liberarInputs();
+                return;
+            }
+
+            const analyzeData = await analyzeResponse.json();
+            let currentHistory = [];
+
+            if (analyzeData.status === 'tool_call') {
+                botMessageDiv.innerHTML = '<span class="text-blue-400 italic animate-pulse">Consultando banco de dados real...</span>';
+                
+                currentHistory = [
+                    analyzeData.choice_message,
+                    {
+                        'role': 'tool',
+                        'tool_call_id': analyzeData.tool_call_id,
+                        'name': analyzeData.function_name,
+                        'content': analyzeData.tool_result
+                    }
+                ];
+            } else if (analyzeData.status === 'regular_chat') {
+                botMessageDiv.innerHTML = '<span class="text-slate-400 italic">Digitando...</span>';
+                currentHistory = []; 
+            } else {
+                botMessageDiv.innerText = 'Erro na resposta estruturada de ferramentas.';
+                liberarInputs();
+                return;
+            }
+
+            setTimeout(async () => {
+                try {
+                    // CORREÇÃO: Removidas as barras invertidas de escape das tags do Blade
+                    const streamResponse = await fetch("{{ route('chat.stream', $currentSession->id) }}", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                        body: JSON.stringify({ history: currentHistory })
+                    });
+
+                    if (!streamResponse.ok) {
+                        botMessageDiv.innerText = 'Erro ao inicializar fluxo de streaming final.';
+                        liberarInputs();
+                        return;
+                    }
+
+                    const reader = streamResponse.body.getReader();
+                    const decoder = new TextDecoder();
+                    let rawResponseText = '';
+
+                    botMessageDiv.innerHTML = '';
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value, { stream: true });
+                        rawResponseText += chunk;
+                        
+                        botMessageDiv.innerHTML = marked.parse(rawResponseText);
+                        
+                        // Atualiza os gráficos do Chart.js em tempo real se a tag nascer no stream
+                        renderChartsInChat();
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    }
+
+                    renderChartsInChat();
+                    if (typeof Prism !== 'undefined') {
+                        Prism.highlightAll();
+                    }
+
+                    if ("{{ $currentSession->title }}" === "Nova conversa") {
+                        window.location.reload();
+                    }
+
+                } catch (streamError) {
+                    botMessageDiv.innerText = 'Erro crítico de rede na transmissão do fluxo de texto.';
+                    console.error(streamError);
+                    liberarInputs();
+                } finally {
+                    liberarInputs();
+                }
+            }, 500);
+
+        } catch (error) {
+            botMessageDiv.innerText = 'Erro crítico de rede ao processar fluxo duplo.';
+            console.error(error);
+            liberarInputs();
+        }
+    });
     </script>
 @endsection
